@@ -1,0 +1,22 @@
+version: 2.1
+orbs:
+  eb: circleci/aws-elastic-beanstalk@1.0.0
+jobs:
+  eb-deploy:
+    docker:
+      - image: 'cimg/base:stable'
+    steps:
+      - checkout
+      - eb/setup
+      - run:
+          command: |
+            export MY_APP=my-app
+            export MY_ENV=my-env
+            eb init $MY_APP -r $AWS_DEFAULT_REGION -p corretto-11
+            #eb create $MY_ENV --single --instance-types t2.micro --envvars key1=val1 || echo "environment is already created."
+            eb deploy $MY_ENV -l v-${CIRCLE_BUILD_NUM}
+          name: You may now use the EB CLI within this job
+workflows:
+  main_workflow:
+    jobs:
+      - eb-deploy
