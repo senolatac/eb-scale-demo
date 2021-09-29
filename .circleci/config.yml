@@ -1,22 +1,96 @@
 version: 2.1
 orbs:
-  eb: circleci/aws-elastic-beanstalk@1.0.0
+  aws-ecr: circleci/aws-ecr@7.0.0
+  aws-ecs: circleci/aws-ecs@2.2.0
+
 jobs:
-  eb-deploy:
+  build_and_deploy:
     docker:
-      - image: 'cimg/base:stable'
+      - image: circleci/openjdk:11-jdk
+
     steps:
       - checkout
-      - eb/setup
+      - setup_remote_docker
       - run:
+          name: Setup common environment variables
           command: |
-            export MY_APP=my-app
-            export MY_ENV=my-env
-            eb init $MY_APP -r $AWS_DEFAULT_REGION -p corretto-11
-            #eb create $MY_ENV --single --instance-types t2.micro --envvars key1=val1 || echo "environment was already created."
-            eb deploy $MY_ENV -l v-${CIRCLE_BUILD_NUM}
-          name: You may now use the EB CLI within this job
+            echo 'export SHORT_HASH="${CIRCLE_SHA1:0:7}"' >> $BASH_ENV
+            echo 'export ECR_REPOSITORY_NAME="${AWS_RESOURCE_NAME_PREFIX}"' >> $BASH_ENV
+            if [ "${CIRCLE_BRANCH}" == "master" ]
+            then
+              echo 'export FULL_IMAGE_NAME="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ECR_REPOSITORY_NAME}:latest-qa"' >> $BASH_ENV
+              echo 'export FULL_IMAGE_PREVIOS_NAME="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ECR_REPOSITORY_NAME}:${SHORT_HASH}"' >> $BASH_ENV
+            elif [ "${CIRCLE_BRANCH}" == "release" ]
+            then
+              echo 'export FULL_IMAGE_NAME="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ECR_REPOSITORY_NAME}:latest-prod"' >> $BASH_ENV
+            fi
+      - run:
+          name: Install dependencies for project
+          command: gradle assemble
+      - run:
+          name: Install dependencies for AWS
+          command: |
+            sudo apt-get update
+            sudo apt-get -y -qq install awscli
+            sudo apt-get install python3-pip
+            sudo pip3 install --upgrade awscli
+      - run:
+          name: Build image
+          command: |
+            docker build -t $FULL_IMAGE_NAME .
+      - run:
+          name: Push image
+          command: |
+            eval $(aws ecr get-login --region $AWS_DEFAULT_REGION --no-include-email)
+            docker push $FULL_IMAGE_NAME
+      - run:
+          name: Retagging
+          command: |
+            MANIFEST=$(aws ecr batch-get-image --repository-name ${AWS_RESOURCE_NAME_PREFIX} --image-ids imageTag=latest-qa --query 'images[].imageManifest' --output text)
+            aws ecr put-image --repository-name ${AWS_RESOURCE_NAME_PREFIX} --image-tag ${SHORT_HASH} --image-manifest "$MANIFEST"
+  update:
+    docker:
+      - image: circleci/openjdk:11-jdk
+    steps:
+      - run:
+          name: Install dependencies for AWS
+          command: |
+            sudo apt-get update
+            sudo apt-get -y -qq install awscli
+            sudo apt-get install python3-pip
+            sudo pip3 install --upgrade awscli
+      - run:
+          name: Force Update Existing Service
+          command: |
+            if [ "${CIRCLE_BRANCH}" == "master" ]
+            then
+               aws ecs update-service --cluster qa-demo-ecs-cluster --service search-ecs-service-qa --force-new-deployment
+            elif [ "${CIRCLE_BRANCH}" == "release" ]
+            then
+              aws ecs update-service --cluster prod-ecs-cluster --service search-ecs-service-prod --force-new-deployment
+            fi
 workflows:
-  main_workflow:
+  build-deploy-qa:
     jobs:
-      - eb-deploy
+      - build_and_deploy:
+          filters:
+            branches:
+              only: master
+      - update:
+          requires:
+            - build_and_deploy
+          filters:
+            branches:
+              only: master
+  build-deploy-prod:
+    jobs:
+      - build_and_deploy:
+          filters:
+            branches:
+              only: release
+      - update:
+          requires:
+            - build_and_deploy
+          filters:
+            branches:
+              only: release
