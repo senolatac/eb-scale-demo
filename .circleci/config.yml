@@ -13,7 +13,7 @@ jobs:
             export MY_APP=my-app
             export MY_ENV=my-env
             eb init $MY_APP -r $AWS_DEFAULT_REGION -p corretto-11
-            #eb create $MY_ENV --single --instance-types t2.micro --envvars key1=val1 || echo "environment is already created."
+            #eb create $MY_ENV --single --instance-types t2.micro --envvars key1=val1 || echo "environment was already created."
             eb deploy $MY_ENV -l v-${CIRCLE_BUILD_NUM}
           name: You may now use the EB CLI within this job
 workflows:
